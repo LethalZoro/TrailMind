@@ -18,8 +18,8 @@ dtype = 'float32'
 
 
 # load model and processor
-processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
-model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
+processor = WhisperProcessor.from_pretrained("openai/whisper-base")
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base")
 model.config.forced_decoder_ids = None
 
 # Create a queue to store audio chunks
@@ -49,9 +49,9 @@ async def stream_and_speak(query):
     response = ollama.generate(
         model="gemma3:1b",
         prompt=(
-            "You are an outdoor voice assistant. Be precise but short in your answers.\n"
-            "Current query: {query}\n"
-            "Remember to answer the question without any preamble or introduction."
+            f"You are an outdoor voice assistant. Be precise in your answers. Answer in sentances. dont use points or any other formatting\n"
+            f"Current query: {query}\n"
+            f"Remember to answer the question without any preamble or introduction."
         ),
         stream=True,
         options={"temperature": 0.7, "num_predict": 100}
@@ -86,39 +86,88 @@ def audio_callback(indata, frames, time, status):
         audio_queue.put(indata.copy())
         # print(f"Captured audio chunk of shape {indata.shape}")
 
+# def key_monitor():
+#     """Monitor space bar and ESC using pynput"""
+#     global is_recording, stop_recording
+
+#     def on_press(key):
+#         global is_recording
+#         try:
+#             # Check if key is the space key using pynput's Key.space
+#             if key == pynput_keyboard.Key.space and not is_recording:
+#                 is_recording = True
+#                 audio_queue.queue.clear()
+#                 print("Recording... (holding space)")
+#         except AttributeError:
+#             pass
+
+#     def on_release(key):
+#         global is_recording, stop_recording
+#         try:
+#             if key == pynput_keyboard.Key.space and is_recording:
+#                 is_recording = False
+#                 print("Processing...")
+#                 process_audio()
+#         except AttributeError:
+#             if key == pynput_keyboard.Key.esc:
+#                 stop_recording = True
+#                 is_recording = False
+#                 print("Stopping...")
+#                 return False  # Stop listener
+
+#     print("Press and hold SPACE to record. Release to transcribe. Press ESC to quit.")
+#     with pynput_keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+#         listener.join()
+
 def key_monitor():
-    """Monitor space bar and ESC using pynput"""
+    """Monitor space bar and ESC using direct terminal input"""
     global is_recording, stop_recording
-
-    def on_press(key):
-        global is_recording
-        try:
-            # Check if key is the space key using pynput's Key.space
-            if key == pynput_keyboard.Key.ctrl and not is_recording:
-                is_recording = True
-                audio_queue.queue.clear()
-                print("Recording... (holding space)")
-        except AttributeError:
-            pass
-
-    def on_release(key):
-        global is_recording, stop_recording
-        try:
-            if key == pynput_keyboard.Key.ctrl and is_recording:
-                is_recording = False
-                print("Processing...")
-                process_audio()
-        except AttributeError:
-            if key == pynput_keyboard.Key.esc:
-                stop_recording = True
-                is_recording = False
-                print("Stopping...")
-                return False  # Stop listener
-
-    print("Press and hold SPACE to record. Release to transcribe. Press ESC to quit.")
-    with pynput_keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-        listener.join()
-
+    
+    import termios
+    import tty
+    import sys
+    import select
+    
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        print("\rPress and hold SPACE to record. Release to transcribe. Press ESC or Q to quit.")
+        
+        # Track space bar state
+        space_pressed = False
+        
+        while not stop_recording:
+            # Check if input is available (non-blocking)
+            r, _, _ = select.select([sys.stdin], [], [], 0.1)
+            
+            if r:
+                ch = sys.stdin.read(1)
+                
+                # Space pressed
+                if ch == ' ':
+                    if not space_pressed:
+                        space_pressed = True
+                        is_recording = True
+                        audio_queue.queue.clear()
+                        print("\rRecording... (holding space)")
+                # Space released (any other key after space was pressed)
+                elif space_pressed:
+                    space_pressed = False
+                    is_recording = False
+                    print("\rProcessing...")
+                    process_audio()
+                    print("\rPress and hold SPACE to record. Press ESC or Q to quit.")
+                
+                # ESC or q to quit
+                if ch == '\x1b' or ch.lower() == 'q':
+                    stop_recording = True
+                    is_recording = False
+                    print("\rStopping...")
+                    break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        print("\nKeyboard monitor stopped")
 def process_audio():
     """Process collected audio chunks and transcribe"""
     if audio_queue.empty():
