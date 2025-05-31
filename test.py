@@ -49,7 +49,7 @@ async def stream_and_speak(query):
     response = ollama.generate(
         model="gemma3:1b",
         prompt=(
-            f"You are an outdoor voice assistant. Be precise in your answers. Answer in sentances. dont use points or any other formatting\n"
+            f"You are an outdoor voice assistant. Be precise in your answers. Answer in sentences. don't use points or any other formatting\n"
             f"Current query: {query}\n"
             f"Remember to answer the question without any preamble or introduction."
         ),
