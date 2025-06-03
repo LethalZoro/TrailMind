@@ -10,6 +10,15 @@ import threading
 import queue
 import time
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
+from transformers import AutoImageProcessor, AutoModelForImageClassification
+from PIL import Image
+import requests
+import time
+
+# Load the model and processor
+processor_image = AutoImageProcessor.from_pretrained("dima806/medicinal_plants_image_detection")
+model_image = AutoModelForImageClassification.from_pretrained("dima806/medicinal_plants_image_detection")
+
 
 # Setup audio parameters
 sample_rate = 16000  # Sample rate expected by Whisper
@@ -18,8 +27,8 @@ dtype = 'float32'
 
 
 # load model and processor
-processor = WhisperProcessor.from_pretrained("openai/whisper-base")
-model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base")
+processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
 model.config.forced_decoder_ids = None
 
 # Create a queue to store audio chunks
@@ -41,20 +50,105 @@ async def speak_from_queue(queue):
         subprocess.run(command, shell=True)
         queue.task_done()
 
+
+def classify_medicinal_plant(image_path):
+    # Load the local image file
+    image = Image.open(image_path)
+    
+    # Process the image for model input
+    inputs = processor_image(images=image, return_tensors="pt")
+    
+    # Time the prediction
+    time_start = time.time()
+    # Get model predictions
+    outputs = model_image(**inputs)
+    time_end = time.time()
+    
+    # Calculate prediction time
+    prediction_time = time_end - time_start
+    print(f"Time taken for prediction: {prediction_time:.4f} seconds")
+    
+    # Process predictions
+    predictions = outputs.logits.softmax(dim=1)
+    
+    # Get the predicted class
+    predicted_class_idx = predictions.argmax().item()
+    predicted_class = model_image.config.id2label[predicted_class_idx]
+    confidence = predictions[0][predicted_class_idx].item()
+    
+    print(f"Predicted class: {predicted_class}")
+    print(f"Confidence: {confidence:.2%}")
+    
+    return {
+        "class": predicted_class,
+        "confidence": confidence,
+        "prediction_time": prediction_time
+    }
+
+def capture_and_classify_plant():
+    """
+    Captures an image using the camera, classifies it using the model, 
+    and returns the predicted class with its confidence.
+    """
+    from picamera2 import Picamera2, Preview
+    import time
+    from PIL import Image
+
+    # Initialize the camera
+    picam2 = Picamera2()
+    # picam2.start_preview(Preview.QTGL)
+    preview_config = picam2.create_preview_configuration()
+    capture_config = picam2.create_still_configuration()
+
+    # Configure and start the camera
+    picam2.configure(preview_config)
+    picam2.start()
+    time.sleep(2)  # Allow the camera to stabilize
+
+    # Capture the image
+    image = picam2.switch_mode_and_capture_image(capture_config)
+    picam2.close()
+
+    # Save the image temporarily
+    temp_image_path = "captured_image.jpg"
+    image.save(temp_image_path)
+
+    # Classify the captured image
+    result = classify_medicinal_plant(temp_image_path)
+
+    # Return the result
+    return result
+
 # Main function: stream from Ollama, buffer sentences, and queue them
 async def stream_and_speak(query):
     queue = asyncio.Queue()
     speaker_task = asyncio.create_task(speak_from_queue(queue))
+    image_task = False
+    if re.search(r"\bwhat\s+is\s+this\b", query, re.IGNORECASE):
+        image_task = True
 
-    response = ollama.generate(
-        model="gemma3:1b",
-        prompt=(
-            f"You are an outdoor voice assistant. Be precise in your answers. Answer in sentences. don't use points or any other formatting\n"
+    if image_task:
+        result=capture_and_classify_plant()
+    else:
+        result = {"class": "unknown", "confidence": 0.0, "prediction_time": 0.0}
+
+    prompt_normal=(
+            f"You are an outdoor voice assistant. Be precise in your answers.\n"
             f"Current query: {query}\n"
-            f"Remember to answer the question without any preamble or introduction."
-        ),
+            f"Remember to answer the question without any preamble or introduction. Be to the point.\n"
+            f"Answer in a single sentence, no more than 50 words.\n"
+        )
+    prompt_image=(
+            f"You are an outdoor voice assistant. Be precise in your answers.\n"
+            f"The user has captured an image of a plant."
+            f"the classification result is: {result['class']} with confidence {result['confidence']:.2%}.\n"
+            f"Briefly describe the plant and its uses in a single sentence, no more than 50 words.\n"
+        )
+    response = ollama.generate(
+        model="smollm:135m",
+        prompt= prompt_image if image_task else prompt_normal,
         stream=True,
-        options={"temperature": 0.7, "num_predict": 100}
+        options={"temperature": 0.7, "num_predict": 50}
     )
 
     buffer = ""
